@@ -351,10 +351,10 @@ addLayers().then(() => {
     map.on('click', onMapClick);
 });
 
-preload_zarrs().then((zarrs) => {
-    console.log('preloaded zarrs');
-    console.log(zarrs);
-});
+// preload_zarrs().then((zarrs) => {
+//     console.log('preloaded zarrs');
+//     console.log(zarrs);
+// });
 
 
 

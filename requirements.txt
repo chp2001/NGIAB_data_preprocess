@@ -14,8 +14,7 @@ xarray
 rioxarray
 zarr
 netcdf4
-dask
-black
+dask[distributed]
 isort
 h5netcdf
 numba

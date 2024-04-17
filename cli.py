@@ -30,13 +30,22 @@ logging.basicConfig(
 @cache
 def get_cached():
     cached_settings = file_paths.root_output_dir() / "cached_settings.pkl"
+    data = {}
     if cached_settings.exists():
         with cached_settings.open("rb") as f:
-            return pickle.load(f)
-    return {
+            data = pickle.load(f)
+    
+    defaults = {
         "args[]": [],
-        "settings": {}
+        "settings": {},
+        "last_subset": "",
     }
+
+    for k, v in defaults.items():
+        if k not in data:
+            data[k] = v
+
+    return data
 
 def save_cached(data):
     if not data or not isinstance(data, dict) or len(data) == 0:
@@ -160,6 +169,11 @@ def main():
     elif args.subset and waterbody_ids:
         wb_id_for_name = waterbody_ids[0]
 
+    elif "last_subset" in cached and cached["last_subset"] != "":
+        response = input(f"Last subset was {cached['last_subset']}. Use this as output name? (Y/n): ")
+        if response.lower() in ["y", "yes", ""]:
+            wb_id_for_name = cached["last_subset"]
+
     elif "input_file" in cache_settings:
         fname = Path(cache_settings["input_file"]).stem
         response = input(f"Use cached input file name as output name, {fname}? (Y/n): ")
@@ -247,7 +261,11 @@ def main():
 
     # Save the settings to the cache
     args_dict = vars(args)
-    save_cached({"args[]": [k for k, v in args_dict.items() if v], "settings": args_dict})
+    save_cached({
+        "args[]": [k for k, v in args_dict.items() if v], 
+        "settings": args_dict,
+        "last_subset": wb_id_for_name if args.subset else ""
+    })
 
 
 if __name__ == "__main__":

@@ -103,11 +103,14 @@ def compute_zonal_stats(
     timer_start = time.time()
     gfd_chunks = np.array_split(gdf, multiprocessing.cpu_count() - 1)
     one_timestep = merged_data.isel(time=0).compute()
-    with multiprocessing.Pool() as pool:
-        args = [(one_timestep, gdf_chunk) for gdf_chunk in gfd_chunks]
-        catchments = pool.starmap(get_cell_weights, args)
+    # with multiprocessing.Pool() as pool:
+    #     args = [(one_timestep, gdf_chunk) for gdf_chunk in gfd_chunks]
+    #     catchments = pool.starmap(get_cell_weights, args)
 
-    catchments = pd.concat(catchments)
+    # args = [(one_timestep, gdf_chunk) for gdf_chunk in gfd_chunks]
+    catchments = get_cell_weights(gdf=gdf, raster=one_timestep)
+
+    # catchments = pd.concat(catchments)
 
     # adding APCP_SURFACE to the dataset, this is a hack and not a real APCP_SURFACE
     merged_data["APCP_surface"] = (merged_data["RAINRATE"] * 3600 * 1000) / 0.998

@@ -1,4 +1,6 @@
 import argparse
+
+import dask.distributed
 from data_processing.file_paths import file_paths
 from data_processing.subset import subset
 from data_processing.forcings import create_forcings
@@ -9,6 +11,21 @@ from datetime import datetime
 from pathlib import Path
 import pickle
 from functools import cache
+from dask.distributed import Client, get_client
+import dask
+import logging
+gib = 2**30
+# dask.config.set({
+#         "array.chunk-size": "128MiB",
+#         "distributed.scheduler.active-memory-manager.measure": "process",
+#         "distributed.rmm.pool-size": 2*gib,
+# })
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(name)-12s: %(levelname)s - %(message)s",
+    filename="app.log",
+    filemode="w",
+)  # Append mode
 
 @cache
 def get_cached():
@@ -190,6 +207,11 @@ def main():
             print(f"Subset geopackage not found: {gpkg_path}")
             sys.exit()
 
+        try:
+            client = get_client()
+        except ValueError:
+            client = Client()
+    
         create_forcings(
             start_time=args.start_date, end_time=args.end_date, output_folder_name=output_folder.name
         )

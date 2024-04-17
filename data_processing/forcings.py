@@ -7,6 +7,8 @@ from typing import Tuple
 from functools import partial, cache
 from datetime import datetime
 
+import dask.delayed
+import dask.delayed
 import numba
 import numpy as np
 import dask
@@ -19,19 +21,14 @@ from exactextract import exact_extract
 from dask.distributed import Client, get_client
 
 from data_processing.file_paths import file_paths
+from dask.distributed import get_client, TimeoutError
+
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
-
-dask.config.set({"array.chunk-size": "1024MiB"})
-
-
-@cache
-def open_s3_store(url: str) -> s3fs.S3Map:
-    """Open an s3 store from a given url."""
-    return s3fs.S3Map(url, s3=s3fs.S3FileSystem(anon=True))
+client = get_client("localhost:8786", timeout=5)
 
 
-@cache
 def load_zarr_datasets() -> xr.Dataset:
     """Load zarr datasets from S3 within the specified time range."""
     forcing_vars = ["lwdown", "precip", "psfc", "q2d", "swdown", "t2d", "u2d", "v2d"]
@@ -39,8 +36,8 @@ def load_zarr_datasets() -> xr.Dataset:
         f"s3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/forcing/{var}.zarr"
         for var in forcing_vars
     ]
-    s3_stores = [open_s3_store(url) for url in s3_urls]
-    dataset = xr.open_mfdataset(s3_stores, parallel=True, engine="zarr")
+    s3_stores = [s3fs.S3Map(url, s3=s3fs.S3FileSystem(anon=True)) for url in s3_urls]
+    dataset = xr.open_mfdataset(s3_stores, parallel=True, chunks="auto", engine="zarr")
     return dataset
 
 
@@ -64,13 +61,18 @@ def clip_dataset_to_bounds(
 
 
 def compute_store(stores: xr.Dataset, cached_nc_path: Path) -> xr.Dataset:
-    stores.to_netcdf(cached_nc_path)
-    data = xr.open_mfdataset(cached_nc_path, parallel=True, engine = "netcdf4")
-    return data
+    print("Computing store")
+    stores.drop_vars("crs")
+    rechunked = stores.chunk({"time": None, "y": "auto", "x": "auto"})
+    # rechunked to optimize for numba time series operations
+    rechunked.to_netcdf(cached_nc_path)
+    # this seems insane but it stops future requests from redownloading data from s3
+    rechunked = xr.open_mfdataset(cached_nc_path, parallel=True, chunks="auto")
+    return rechunked
 
 
-@numba.njit(parallel=True)
-def compute_weighted_mean(data_array, cell_ids, weights):
+@numba.jit(parallel=True)
+def dask_weighted_mean(data_array, cell_ids, weights):
     mean_at_timestep = np.zeros(data_array.shape[0])
     for time_step in numba.prange(data_array.shape[0]):
         weighted_total = 0.0
@@ -80,6 +82,7 @@ def compute_weighted_mean(data_array, cell_ids, weights):
     return mean_at_timestep
 
 
+@dask.delayed
 def get_cell_weights(raster, gdf):
     output = exact_extract(
         raster["LWDOWN"],
@@ -96,25 +99,8 @@ def add_APCP_SURFACE_to_dataset(dataset: xr.Dataset) -> xr.Dataset:
     return dataset
 
 
-def compute_zonal_stats(
-    gdf: gpd.GeoDataFrame, merged_data: xr.Dataset, forcings_dir: Path
-) -> None:
-    logger.info("Computing zonal stats in parallel for all timesteps")
-    timer_start = time.time()
-    gfd_chunks = np.array_split(gdf, multiprocessing.cpu_count() - 1)
-    one_timestep = merged_data.isel(time=0).compute()
-    # with multiprocessing.Pool() as pool:
-    #     args = [(one_timestep, gdf_chunk) for gdf_chunk in gfd_chunks]
-    #     catchments = pool.starmap(get_cell_weights, args)
-
-    # args = [(one_timestep, gdf_chunk) for gdf_chunk in gfd_chunks]
-    catchments = get_cell_weights(gdf=gdf, raster=one_timestep)
-
-    # catchments = pd.concat(catchments)
-
-    # adding APCP_SURFACE to the dataset, this is a hack and not a real APCP_SURFACE
-    merged_data["APCP_surface"] = (merged_data["RAINRATE"] * 3600 * 1000) / 0.998
-
+@dask.delayed
+def setup_delayed_compute(data, cell_ids, weights, catchment, output_folder):
     variables = [
         "LWDOWN",
         "PSFC",
@@ -126,64 +112,80 @@ def compute_zonal_stats(
         "V2D",
         "APCP_surface",
     ]
-
-    results = []
+    # Rename variables
+    renamed_vars = {
+        "LWDOWN": "DLWRF_surface",
+        "PSFC": "PRES_surface",
+        "Q2D": "SPFH_2maboveground",
+        "RAINRATE": "precip_rate",
+        "SWDOWN": "DSWRF_surface",
+        "T2D": "TMP_2maboveground",
+        "U2D": "UGRD_10maboveground",
+        "V2D": "VGRD_10maboveground",
+        "APCP_surface": "APCP_surface",
+    }
+    delayed_saves = []
     for variable in variables:
+        # Load the variable data in chunks
         variable_data = []
-        raster = merged_data[variable].values.reshape(merged_data[variable].shape[0], -1)
-        for catchment in catchments.index.unique():
-            cell_ids = catchments.loc[catchment]["cell_id"]
-            weights = catchments.loc[catchment]["coverage"]
+        raster = data[variable].values.reshape(data[variable].shape[0], -1)
+        mean_at_timesteps = dask.delayed(dask_weighted_mean)(raster, cell_ids, weights)
+        variable_data.append(mean_at_timesteps)
+        # Concatenate the chunked results
+        mean_at_timesteps = dask.delayed(np.concatenate)(variable_data)
+        # Create a delayed DataArray
+        temp_da = dask.delayed(xr.DataArray)(
+            mean_at_timesteps,
+            dims=["time"],
+            coords={"time": data["time"].values},
+            name=f"{renamed_vars[variable]}_{catchment}",
+        )
+        temp_da = dask.delayed(temp_da.assign_coords)(catchment=catchment)
 
-            mean_at_timesteps = compute_weighted_mean(raster, cell_ids, weights)
+        # Save the delayed DataArray to disk
+        csv_path = output_folder / f"{catchment}_{renamed_vars[variable]}.csv"
+        delayed_save = dask.delayed(temp_da.to_dataframe().to_csv)(csv_path)
+        delayed_saves.append(delayed_save)
+    return delayed_saves
 
-            temp_da = xr.DataArray(
-                mean_at_timesteps,
-                dims=["time"],
-                coords={"time": merged_data["time"].values},
-                name=f"{variable}_{catchment}",
-            )
-            temp_da = temp_da.assign_coords(catchment=catchment)
-            variable_data.append(temp_da)
 
-        # Concatenate data arrays for each variable across all catchments
-        concatenated_da = xr.concat(variable_data, dim="catchment")
-        results.append(concatenated_da.to_dataset(name=variable))
+def compute_zonal_stats(
+    gdf: gpd.GeoDataFrame, merged_data: xr.Dataset, forcings_dir: Path
+) -> None:
+    logger.info("Computing zonal stats in parallel for all timesteps")
+    timer_start = time.time()
+    gfd_chunks = np.array_split(gdf, multiprocessing.cpu_count() - 1)
+    one_timestep = merged_data.isel(time=0).compute()
 
-    # Combine all variables into a single dataset
-    final_ds = xr.merge(results)
+    for gdf_chunk in gfd_chunks:
+        catchments = get_cell_weights(one_timestep, gdf_chunk)
+
+    catchments = dask.compute(catchments)
+    catchments = pd.concat(catchments)
+
+    # Add APCP_SURFACE to the dataset
+    merged_data["APCP_surface"] = (merged_data["RAINRATE"] * 3600 * 1000) / 0.998
 
     output_folder = forcings_dir / "by_catchment"
     # Clear out any existing files
     for file in output_folder.glob("*.csv"):
         file.unlink()
 
-    final_ds = final_ds.rename_vars(
-        {
-            "LWDOWN": "DLWRF_surface",
-            "PSFC": "PRES_surface",
-            "Q2D": "SPFH_2maboveground",
-            "RAINRATE": "precip_rate",
-            "SWDOWN": "DSWRF_surface",
-            "T2D": "TMP_2maboveground",
-            "U2D": "UGRD_10maboveground",
-            "V2D": "VGRD_10maboveground",
-            "APCP_surface": "APCP_surface",
-        }
-    )
+    # scatter the merged data
+    client.scatter(merged_data)
+    print("Scattered data")
 
-    logger.info("Saving to disk")
-    # Save to disk
     delayed_saves = []
-    for catchment in final_ds.catchment.values:
-        catchment_ds = final_ds.sel(catchment=catchment)
-        csv_path = output_folder / f"{catchment}.csv"
-        delayed_save = dask.delayed(
-            catchment_ds.to_dataframe().drop(["catchment"], axis=1).to_csv(csv_path)
+    for catchment in tqdm(catchments.index.unique()):
+        cell_ids = catchments.loc[catchment]["cell_id"]
+        weights = catchments.loc[catchment]["coverage"]
+        delayed_saves.append(
+            setup_delayed_compute(merged_data, cell_ids, weights, catchment, output_folder)
         )
-        delayed_saves.append(delayed_save)
 
-    dask.compute(*delayed_saves)
+    print("Computing delayed saves")
+    # Compute all delayed operations
+    dask.compute(delayed_saves)
 
     logger.info(
         f"Forcing generation complete!\nZonal stats computed in {time.time() - timer_start} seconds"
@@ -218,6 +220,7 @@ def create_forcings(start_time: str, end_time: str, output_folder_name: str) -> 
         cached_data = xr.open_mfdataset(
             forcing_paths.cached_nc_file(), parallel=True, engine = "netcdf4"
         )
+        print(cached_data)
         if cached_data.time[0].values <= np.datetime64(start_time) and cached_data.time[
             -1
         ].values >= np.datetime64(end_time):

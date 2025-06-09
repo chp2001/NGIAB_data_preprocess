@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_from_to_id_pairs(
-    hydrofabric: Path = file_paths.conus_hydrofabric, ids: Set = None
+    hydrofabric: Path = file_paths.conus_hydrofabric, ids: Set | List | None = None
 ) -> List[tuple]:
     """
     Retrieves the from and to IDs from the specified hydrofabric.
@@ -112,7 +112,7 @@ def get_graph() -> ig.Graph:
     return network_graph
 
 
-def get_outlet_id(wb_or_cat_id: str) -> str:
+def get_outlet_id(wb_or_cat_id: str) -> str | None:
     """
     Retrieves the ID of the node downstream of the given node in the hydrological network.
 
@@ -209,7 +209,7 @@ def get_upstream_ids(names: Union[str, List[str]], include_outlet: bool = True) 
         if name in parent_ids:
             continue
         try:
-            if "cat" in name:
+            if "cat" in name:  # type: ignore # If name is None, this will raise an error, which is handled below
                 node_index = graph.vs.find(cat=name).index
             else:
                 node_index = graph.vs.find(name=name).index

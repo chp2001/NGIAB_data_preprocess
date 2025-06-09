@@ -7,7 +7,9 @@ from typing import List, Optional, Tuple, Union
 import geopandas as gpd
 import numpy as np
 import xarray as xr
-from dask.distributed import Client, progress
+from xarray.core.types import InterpOptions
+from xarray.backends.api import T_NetcdfEngine
+from dask.distributed import Client, progress, Future
 from data_processing.dask_utils import use_cluster
 
 logger = logging.getLogger(__name__)
@@ -80,7 +82,10 @@ def validate_time_range(dataset: xr.Dataset, start_time: str, end_time: str) -> 
 
 
 def clip_dataset_to_bounds(
-    dataset: xr.Dataset, bounds: Tuple[float, float, float, float], start_time: str, end_time: str
+    dataset: xr.Dataset,
+    bounds: Tuple[float, float, float, float] | np.ndarray[tuple[int], np.dtype[np.float64]],
+    start_time: str,
+    end_time: str,
 ) -> xr.Dataset:
     """
     Clip the dataset to specified geographical bounds.
@@ -89,7 +94,7 @@ def clip_dataset_to_bounds(
     ----------
     dataset : xr.Dataset
         Dataset to be clipped.
-    bounds : tuple[float, float, float, float]
+    bounds : tuple[float, float, float, float] | np.ndarray[tuple[int], np.dtype[np.float64]]
         Corners of bounding box. bounds[0] is x_min, bounds[1] is y_min,
         bounds[2] is x_max, bounds[3] is y_max.
     start_time : str
@@ -117,7 +122,7 @@ def interpolate_nan_values(
     dataset: xr.Dataset,
     variables: Optional[List[str]] = None,
     dim: str = "time",
-    method: str = "nearest",
+    method: InterpOptions = "nearest",
     fill_value: str = "extrapolate",
 ) -> None:
     """
@@ -157,7 +162,7 @@ def interpolate_nan_values(
 
 
 @use_cluster
-def save_dataset(ds_to_save: xr.Dataset, target_path: Path, engine: str = "h5netcdf"):
+def save_dataset(ds_to_save: xr.Dataset, target_path: Path, engine: T_NetcdfEngine = "h5netcdf"):
     """
     Helper function to compute and save an xarray.Dataset to a NetCDF file.
     Uses a temporary file and rename for atomicity.
@@ -170,7 +175,9 @@ def save_dataset(ds_to_save: xr.Dataset, target_path: Path, engine: str = "h5net
         os.remove(temp_file_path)
 
     client = Client.current()
-    future = client.compute(ds_to_save.to_netcdf(temp_file_path, engine=engine, compute=False))
+    future: Future = client.compute(
+        ds_to_save.to_netcdf(temp_file_path, engine=engine, compute=False)
+    )  # type: ignore
     logger.debug(
         f"NetCDF write task submitted to Dask. Waiting for completion to {temp_file_path}..."
     )
@@ -266,9 +273,20 @@ def save_and_clip_dataset(
     """convenience function clip the remote dataset, and either load from cache or save to cache if it's not present"""
     gdf = gdf.to_crs(dataset.crs)
 
-    cached_data = check_local_cache(cache_location, start_time, end_time, gdf, dataset)
+    cached_data = check_local_cache(
+        cache_location,
+        start_time,  # type: ignore
+        end_time,  # type: ignore
+        gdf,
+        dataset,
+    )
 
     if not cached_data:
-        clipped_data = clip_dataset_to_bounds(dataset, gdf.total_bounds, start_time, end_time)
+        clipped_data = clip_dataset_to_bounds(
+            dataset,
+            gdf.total_bounds,
+            start_time,  # type: ignore
+            end_time,  # type: ignore
+        )
         cached_data = save_to_cache(clipped_data, cache_location)
     return cached_data

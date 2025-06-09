@@ -5,7 +5,7 @@ import shutil
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import pandas
 import requests
@@ -310,7 +310,7 @@ def create_realization(
     start_time: datetime,
     end_time: datetime,
     use_nwm_gw: bool = False,
-    gage_id: str | None = None,
+    gage_id: Optional[str] = None,
 ):
     paths = file_paths(cat_id)
 
@@ -348,7 +348,7 @@ def create_realization(
     create_partitions(paths)
 
 
-def create_partitions(paths: file_paths, num_partitions: int | None = None) -> None:
+def create_partitions(paths: file_paths, num_partitions: Optional[int] = None) -> None:
     if num_partitions is None:
         num_partitions = multiprocessing.cpu_count()
 

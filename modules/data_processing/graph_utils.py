@@ -2,7 +2,7 @@ import logging
 import sqlite3
 from functools import cache
 from pathlib import Path
-from typing import List, Set, Union
+from typing import List, Optional, Set, Union
 
 import igraph as ig
 from data_processing.file_paths import file_paths
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_from_to_id_pairs(
-    hydrofabric: Path = file_paths.conus_hydrofabric, ids: Set | List | None = None
+    hydrofabric: Path = file_paths.conus_hydrofabric, ids: Optional[Set | List] = None
 ) -> List[tuple]:
     """
     Retrieves the from and to IDs from the specified hydrofabric.

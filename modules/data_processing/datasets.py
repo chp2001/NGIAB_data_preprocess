@@ -1,4 +1,5 @@
 import logging
+from typing import Optional
 
 import s3fs
 import xarray as xr
@@ -10,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 @use_cluster
-def load_v3_retrospective_zarr(forcing_vars: list[str] | None = None) -> xr.Dataset:
+def load_v3_retrospective_zarr(forcing_vars: Optional[list[str]] = None) -> xr.Dataset:
     """Load zarr datasets from S3 within the specified time range."""
     # if a LocalCluster is not already running, start one
     if not forcing_vars:
@@ -50,7 +51,7 @@ def load_v3_retrospective_zarr(forcing_vars: list[str] | None = None) -> xr.Data
 
 
 @use_cluster
-def load_aorc_zarr(start_year: int | None = None, end_year: int | None = None) -> xr.Dataset:
+def load_aorc_zarr(start_year: Optional[int] = None, end_year: Optional[int] = None) -> xr.Dataset:
     """Load the aorc zarr dataset from S3."""
     if not start_year or not end_year:
         logger.warning("No start or end year provided, defaulting to 1979-2023")

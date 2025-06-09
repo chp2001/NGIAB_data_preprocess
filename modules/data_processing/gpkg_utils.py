@@ -165,7 +165,7 @@ def convert_to_5070(shapely_geometry: Point) -> Point:
     return new_geometry
 
 
-def get_catid_from_point(coords: Dict[str, float]) -> int:
+def get_catid_from_point(coords: Dict[str, float]) -> str:
     """
     Retrieves the watershed boundary ID (catid) of the watershed that contains the given point.
 

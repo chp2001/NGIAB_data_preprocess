@@ -37,7 +37,7 @@ def decompress_gzip_tar(file_path, output_dir):
     task = progress.add_task("Decompressing", total=1)
     progress.start()
     with gzip.open(file_path, "rb") as f_in:
-        with tarfile.open(fileobj=f_in) as tar:
+        with tarfile.open(fileobj=f_in) as tar:  # type: ignore
             # Extract all contents
             for member in tar:
                 tar.extract(member, path=output_dir)
@@ -222,7 +222,7 @@ def validate_output_dir():
             response = Prompt.ask("Enter the path to the working directory")
         if response == "" or response.lower() == "y":
             response = "~/ngiab_preprocess_output/"
-        file_paths.set_working_dir(response)
+        file_paths.set_working_dir(response)  # type: ignore
 
 
 def validate_all():
